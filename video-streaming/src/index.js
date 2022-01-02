@@ -10,12 +10,14 @@ const express = require("express");
 const amqp = require("amqplib");
 //Load the http library to forward an HTTP request from one container to another.
 const http = require("http");
+const winston = require('winston');
 
 /******
 Globals
 ******/
 //Create a new express instance.
 const app = express();
+const SVC_NAME = "video-streaming";
 const SVC_DNS_RABBITMQ = process.env.SVC_DNS_RABBITMQ;
 const SVC_DNS_VIDEO_STORAGE = process.env.SVC_DNS_VIDEO_STORAGE;
 const PORT = process.env.PORT && parseInt(process.env.PORT) || 3000;
@@ -28,10 +30,11 @@ Resume Operation
 The resume operation strategy intercepts unexpected errors and responds by allowing the process to
 continue.
 ***/
-process.on("uncaughtException",
+process.on('uncaughtException',
 err => {
-  console.error("Uncaught exception:");
-  console.error(err && err.stack || err);
+  logger.error(`${SVC_NAME} - Uncaught exception.`);
+  logger.error(`${SVC_NAME} - ${err}`);
+  logger.error(`${SVC_NAME} - ${err.stack}`);
 })
 
 /***
@@ -44,6 +47,19 @@ Abort and Restart
 //   console.error(err && err.stack || err);
 //   process.exit(1);
 // })
+
+//Winston requires at least one transport (location to save the log) to create a log.
+const logConfiguration = {
+  transports: [ new winston.transports.Console() ],
+  format: winston.format.combine(
+    winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss.SSSSS' }),
+    winston.format.printf(msg => `${msg.timestamp} ${msg.level} ${msg.message}`)
+  ),
+  exitOnError: false
+}
+
+//Create a logger and pass it the Winston configuration object.
+const logger = winston.createLogger(logConfiguration);
 
 /***
 Unlike most other programming languages or runtime environments, Node.js doesn't have a built-in
@@ -58,11 +74,12 @@ if (require.main === module) {
   main()
   .then(() => {
     READINESS_PROBE = true;
-    console.log(`Microservice "video-streaming" is listening on port "${PORT}"!`);
+    logger.info(`${SVC_NAME} - Microservice is listening on port "${PORT}"!`);
   })
   .catch(err => {
-    console.error('Microservice "video-streaming" failed to start.');
-    console.error(err && err.stack || err);
+    logger.error(`${SVC_NAME} - Microservice failed to start.`);
+    logger.error(`${SVC_NAME} - ${err}`);
+    logger.error(`${SVC_NAME} - ${err.stack}`);
   });
 }
 
@@ -77,11 +94,11 @@ function main() {
   //Display a message if any optional environment variables are missing.
   else {
     if (process.env.PORT === undefined) {
-      console.log('The environment variable PORT for the "HTTP server" is missing; using port 3000.');
+      logger.info(`${SVC_NAME} - The environment variable PORT for the HTTP server is missing; using port ${PORT}.`);
     }
     //
     if (process.env.MAX_RETRIES === undefined) {
-      console.log(`The environment variable MAX_RETRIES is missing; using MAX_RETRIES=${MAX_RETRIES}.`);
+      logger.info(`${SVC_NAME} - The environment variable MAX_RETRIES is missing; using MAX_RETRIES=${MAX_RETRIES}.`);
     }
   }
   //Notify when server has started.
@@ -92,7 +109,7 @@ function main() {
 }
 
 function connectToRabbitMQ(url, currentRetry) {
-  console.log(`Connecting (${currentRetry}) to 'RabbitMQ' at ${url}.`);
+  logger.info(`${SVC_NAME} - Connecting (${currentRetry}) to 'RabbitMQ' at ${url}.`);
   /***
   return connect()
     .then(conn =>
@@ -112,7 +129,7 @@ function connectToRabbitMQ(url, currentRetry) {
   ***/
   return amqp.connect(url)
   .then(conn => {
-    console.log("Connected to RabbitMQ.");
+    logger.info(`${SVC_NAME} - Connected to RabbitMQ.`);
     //Create a RabbitMQ messaging channel.
     return conn.createChannel()
     .then(channel => {
@@ -141,11 +158,11 @@ async function requestWithRetry(func, url, maxRetry) {
       if (currentRetry === maxRetry) {
         //Save the error from the most recent attempt.
         lastError = err;
-        console.log(`Maximum number of ${maxRetry} retries has been reached.`);
+        logger.info(`${SVC_NAME} - Maximum number of ${maxRetry} retries has been reached.`);
         break;
       }
       const timeout = (Math.pow(2, currentRetry) - 1) * 100;
-      console.log(`Waiting ${timeout}ms...`);
+      logger.log(`${SVC_NAME} - Waiting ${timeout}ms...`);
       await sleep(timeout);
     }
   }
@@ -177,8 +194,9 @@ function setupHandlers(channel) {
   //Route for streaming video.
   app.get('/video',
   (req, res) => {
+    const cid = req.headers['X-Correlation-Id'];
     const videoId = req.query.id;
-    console.log(`Request ${videoId} from the video storage service.`);
+    logger.info(`${SVC_NAME} ${cid} - Retrieving video '${videoId}' from the video storage service.`);
     //Forward the request to the video storage microservice.
     const forwardReq = http.request({
       host: SVC_DNS_VIDEO_STORAGE,
@@ -193,7 +211,7 @@ function setupHandlers(channel) {
     req.pipe(forwardReq);
     //Send "viewed" message to indicate this video has been watched.
     //sendMultipleRecipientMessage(channel, videoId);
-    sendSingleRecipientMessage(channel, videoId);
+    sendSingleRecipientMessage(channel, videoId, cid);
   });
 }
 
@@ -208,10 +226,10 @@ function sendMultipleRecipientMessage(channel, videoId)
 }
 ***/
 
-function sendSingleRecipientMessage(channel, videoId) {
-  console.log('Publishing message on "viewed" queue.');
+function sendSingleRecipientMessage(channel, videoId, cid) {
+  logger.info(`${SVC_NAME} ${cid} - Publishing message on "viewed" queue.`);
   //Define the message payload. This is the data that will be sent with the message.
-  const msg = { video: { id: videoId } };
+  const msg = { video: { id: videoId, cid: cid } };
   //Convert the message to the JSON format.
   const jsonMsg = JSON.stringify(msg);
   //In RabbitMQ a message can never be sent directly to the queue, it always needs to go through an
