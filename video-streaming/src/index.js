@@ -194,7 +194,12 @@ function setupHandlers(channel) {
   //Route for streaming video.
   app.get('/video',
   (req, res) => {
-    const cid = req.headers['X-Correlation-Id'];
+  /***
+  In the HTTP protocol, headers are case-insensitive; however, the Express framework converts
+  everything to lower case. Unfortunately, for objects in JavaScript, their property names are
+  case-sensitive.
+  ***/
+  const cid = req.headers['x-correlation-id'];
     const videoId = req.query.id;
     logger.info(`${SVC_NAME} ${cid} - Retrieving video '${videoId}' from the video storage service.`);
     //Forward the request to the video storage microservice.
