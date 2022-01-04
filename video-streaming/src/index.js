@@ -211,6 +211,10 @@ function setupHandlers(channel) {
     },
     forwardRes => {
       res.writeHeader(forwardRes.statusCode, forwardRes.headers);
+      /***
+      It pipes the response (using Node.js streams) from the video-storage microservice to the
+      response for this request.
+      ***/
       forwardRes.pipe(res);
     });
     req.pipe(forwardReq);
